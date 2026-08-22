@@ -1,0 +1,25 @@
+name: Test
+
+# Unit tests only. This workflow reads no secrets and needs none, which is why a
+# `pull_request` trigger is safe here and nowhere else in this repository: GitHub
+# never passes secrets to a workflow triggered by a fork's pull request.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+      - run: npm test

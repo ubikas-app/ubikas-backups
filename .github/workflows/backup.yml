@@ -1,0 +1,53 @@
+name: Backup
+
+# Dumps the database, encrypts it with age, and uploads it to R2. See README.md.
+#
+# Only `schedule` and `workflow_dispatch` appear here, and that is a security control,
+# not a preference. This repository is public. A `pull_request` trigger would let a
+# stranger propose a workflow change, and `pull_request_target` or `workflow_run`
+# would hand a fork's code access to the secrets below. Do not add any of them.
+
+on:
+  schedule:
+    # 06:00 UTC is 03:00 in Chile.
+    - cron: "0 6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: backup
+  cancel-in-progress: false
+
+jobs:
+  backup:
+    name: Dump and upload
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+
+      # age is packaged in the Ubuntu archive, so no third-party action handles the
+      # key material. The AWS CLI is already on the image.
+      - name: Install age
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y age
+
+      - uses: supabase/setup-cli@v1
+        with:
+          version: 2.98.1
+
+      - name: Dump, encrypt, and upload
+        env:
+          SUPABASE_DB_URL: ${{ secrets.SUPABASE_DB_URL }}
+          R2_BACKUP_ACCESS_KEY_ID: ${{ secrets.R2_BACKUP_ACCESS_KEY_ID }}
+          R2_BACKUP_SECRET_ACCESS_KEY: ${{ secrets.R2_BACKUP_SECRET_ACCESS_KEY }}
+          BACKUP_AGE_RECIPIENT: ${{ vars.BACKUP_AGE_RECIPIENT }}
+          R2_ACCOUNT_ID: ${{ vars.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
+        run: node scripts/backup.mjs

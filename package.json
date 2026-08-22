@@ -1,0 +1,12 @@
+{
+  "name": "ubikas-backups",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "backup": "node scripts/backup.mjs",
+    "test": "node --test scripts/*.test.mjs"
+  }
+}

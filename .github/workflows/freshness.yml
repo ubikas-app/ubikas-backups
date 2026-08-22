@@ -1,0 +1,66 @@
+name: Freshness
+
+# Reads latest.json from the bucket and fails when the newest backup is stale.
+#
+# The Backup workflow reports its own failures. It cannot report never running at all,
+# which is the failure that matters most: GitHub disables scheduled workflows after 60
+# days without repository activity, and a revoked secret stops the schedule silently.
+#
+# The trigger restriction in backup.yml applies here for the same reason.
+
+on:
+  schedule:
+    - cron: "0 12 * * 1"
+  workflow_dispatch:
+
+jobs:
+  freshness:
+    name: Check the newest backup
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    env:
+      MAX_AGE_HOURS: "48"
+    steps:
+      - name: Read latest.json
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_BACKUP_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_BACKUP_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          # R2 rejects the flexible checksum headers AWS CLI v2 sends by default.
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+          R2_ACCOUNT_ID: ${{ vars.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ vars.R2_BUCKET }}
+        run: |
+          set -euo pipefail
+          aws s3api get-object \
+            --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com" \
+            --bucket "${R2_BUCKET}" \
+            --key latest.json \
+            latest.json
+
+      - name: Fail when the backup is stale
+        run: |
+          set -euo pipefail
+          node -e '
+            const manifest = JSON.parse(require("fs").readFileSync("latest.json", "utf8"));
+            const maxAgeHours = Number(process.env.MAX_AGE_HOURS);
+            const finishedAt = Date.parse(manifest.finished_at);
+            if (Number.isNaN(finishedAt)) {
+              throw new Error("latest.json has no readable finished_at");
+            }
+            const ageHours = (Date.now() - finishedAt) / 3600000;
+            console.log(`Newest backup: ${manifest.object_key}`);
+            console.log(`Rows: ${manifest.total_rows}, bytes: ${manifest.bytes}`);
+            console.log(`Age: ${ageHours.toFixed(1)} hours`);
+            if (ageHours > maxAgeHours) {
+              throw new Error(
+                `The newest backup is ${ageHours.toFixed(1)} hours old, over the ${maxAgeHours} hour limit.`
+              );
+            }
+            if (!manifest.total_rows) {
+              throw new Error("The newest backup reports zero rows.");
+            }
+          '
