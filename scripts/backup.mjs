@@ -118,6 +118,13 @@ export function describeDatabaseUrlProblem(databaseUrl) {
   if (/\[|%5B|YOUR-PASSWORD/i.test(databaseUrl)) {
     return "still holds the [YOUR-PASSWORD] placeholder instead of the real password.";
   }
+  if (/^db\..+\.supabase\.(co|com)$/i.test(url.hostname)) {
+    return (
+      "uses the direct database host, which resolves to IPv6 only unless the project " +
+      "buys the IPv4 add-on. A GitHub-hosted runner cannot reach it. Use the session " +
+      "pooler host, which answers on IPv4, on port 5432."
+    );
+  }
   if (url.port === "6543") {
     return (
       "uses port 6543, which is transaction pooling mode. pg_dump is not supported " +
@@ -125,6 +132,27 @@ export function describeDatabaseUrlProblem(databaseUrl) {
     );
   }
 
+  return null;
+}
+
+/**
+ * Finds the Supabase project ref, which hides in two different places depending on
+ * which connection string was used: the pooler puts it in the username as
+ * `postgres.<ref>`, the direct connection puts it in the host as `db.<ref>.supabase.co`.
+ *
+ * Keeping the host in error output is what makes a failure diagnosable. This is what
+ * stops that decision from publishing the ref along with it.
+ */
+export function supabaseProjectRef(databaseUrl) {
+  try {
+    const url = new URL(databaseUrl);
+    const fromUser = url.username.match(/^postgres\.([a-z0-9]{8,})$/i);
+    if (fromUser) return fromUser[1];
+    const fromHost = url.hostname.match(/^db\.([a-z0-9]{8,})\.supabase\.(?:co|com)$/i);
+    if (fromHost) return fromHost[1];
+  } catch {
+    // Not parseable, so there is no ref to find.
+  }
   return null;
 }
 
@@ -139,7 +167,11 @@ export function scrubConnectionString(text, databaseUrl) {
       // The host is neither, and "no such host" is the most useful line in a failure,
       // so it stays. The length guard stops a short value from mangling normal text:
       // scrubbing every "d" out of a log helps nobody.
-      for (const secret of [url.password, decodeURIComponent(url.password), url.username]) {
+      const ref = supabaseProjectRef(databaseUrl);
+      // "postgres" on its own is generic and appears in image names and error text.
+      // Scrubbing it turned ghcr.io/supabase/postgres into ghcr.io/supabase/<redacted>.
+      const username = url.username === "postgres" ? null : url.username;
+      for (const secret of [url.password, decodeURIComponent(url.password), username, ref]) {
         if (secret && secret.length >= 4) scrubbed = scrubbed.split(secret).join("<redacted>");
       }
     } catch {

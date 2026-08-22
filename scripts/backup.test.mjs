@@ -17,6 +17,7 @@ import {
   requiredBinaries,
   resolveConfig,
   scrubConnectionString,
+  supabaseProjectRef,
   supabaseCommand,
 } from "./backup.mjs";
 
@@ -342,4 +343,50 @@ test("no diagnostic ever repeats the value it rejected", () => {
   assert.ok(problem);
   assert.ok(!problem.includes("sup3r-s3cret"));
   assert.ok(!problem.includes("abcdef"));
+});
+
+test("finds the project ref in either connection style", () => {
+  assert.equal(
+    supabaseProjectRef("postgresql://postgres.wuljfhqlnejnsvfzuvah:p@aws-1.pooler.supabase.com:5432/postgres"),
+    "wuljfhqlnejnsvfzuvah",
+  );
+  assert.equal(
+    supabaseProjectRef("postgresql://postgres:p@db.wuljfhqlnejnsvfzuvah.supabase.co:5432/postgres"),
+    "wuljfhqlnejnsvfzuvah",
+  );
+  assert.equal(supabaseProjectRef("postgresql://postgres:p@127.0.0.1:54322/postgres"), null);
+  assert.equal(supabaseProjectRef("not a url"), null);
+});
+
+test("keeps the project ref out of a diagnosable error", () => {
+  const url = "postgresql://postgres:pw123456@db.wuljfhqlnejnsvfzuvah.supabase.co:5432/postgres";
+  const raw = [
+    'pg_dumpall: error: connection to server at "db.wuljfhqlnejnsvfzuvah.supabase.co"',
+    "(2600:1f1e:75b:4b04::1), port 5432 failed: Network is unreachable",
+  ].join("\n");
+  const scrubbed = scrubConnectionString(raw, url);
+
+  assert.ok(!scrubbed.includes("wuljfhqlnejnsvfzuvah"), "the project ref survived");
+  assert.match(scrubbed, /Network is unreachable/, "the cause was thrown away");
+});
+
+test("does not redact the generic postgres user out of unrelated text", () => {
+  const url = "postgresql://postgres:pw123456@db.abcdefghij.supabase.co:5432/postgres";
+  const raw = "Status: Downloaded newer image for ghcr.io/supabase/postgres:17.6.1.106";
+  assert.equal(scrubConnectionString(raw, url), raw);
+});
+
+test("rejects the IPv6-only direct host before anything expensive runs", () => {
+  assert.match(
+    describeDatabaseUrlProblem(
+      "postgresql://postgres:pw123456@db.wuljfhqlnejnsvfzuvah.supabase.co:5432/postgres",
+    ) ?? "",
+    /IPv6 only.*session\s+pooler/s,
+  );
+  assert.equal(
+    describeDatabaseUrlProblem(
+      "postgresql://postgres.wuljfhqlnejnsvfzuvah:pw123456@aws-1-sa-east-1.pooler.supabase.com:5432/postgres",
+    ),
+    null,
+  );
 });
