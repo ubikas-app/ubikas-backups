@@ -15,6 +15,7 @@ import {
   parseCopyRowCounts,
   requiredBinaries,
   resolveConfig,
+  scrubConnectionString,
   supabaseCommand,
 } from "./backup.mjs";
 
@@ -271,4 +272,40 @@ test("every checked binary carries an install hint", () => {
 test("the emptiness guards match what the schema is expected to contain", () => {
   assert.equal(REQUIRED_TABLE, "places");
   assert.equal(MINIMUM_TABLE_COUNT, 5);
+});
+
+test("scrubs the secret parts of a connection string, keeping the useful ones", () => {
+  const url =
+    "postgresql://postgres.wuljfhq:sup3r-s3cret@aws-1-sa-east-1.pooler.supabase.com:5432/postgres";
+  const raw = [
+    `failed to connect to ${url}`,
+    "dial tcp: lookup aws-1-sa-east-1.pooler.supabase.com: no such host",
+    "password authentication failed for user postgres.wuljfhq",
+  ].join("\n");
+  const scrubbed = scrubConnectionString(raw, url);
+
+  assert.ok(!scrubbed.includes("sup3r-s3cret"), "the password survived");
+  assert.ok(!scrubbed.includes("postgres.wuljfhq"), "the project ref survived");
+  assert.ok(!scrubbed.includes(url), "the whole url survived");
+
+  // The host is not a secret, and this is the line that actually explains a failure.
+  assert.match(scrubbed, /no such host/);
+  assert.match(scrubbed, /aws-1-sa-east-1\.pooler\.supabase\.com/);
+});
+
+test("scrubs a connection string the tool composed on its own", () => {
+  const scrubbed = scrubConnectionString("dialing postgres://someone:pw@example.com:5432/db now", "");
+  assert.ok(!scrubbed.includes("pw@example.com"));
+  assert.match(scrubbed, /dialing <db-url> now/);
+});
+
+test("a short username or password never mangles ordinary diagnostics", () => {
+  const raw = "pg_dump: error: server version 17.6; pg_dump version 16.4";
+  assert.equal(scrubConnectionString(raw, "postgresql://u:p@h:5432/d"), raw);
+});
+
+test("keeps the line that names the real cause", () => {
+  const url = "postgresql://postgres.abc:longpassword@db.example.supabase.co:6543/postgres";
+  const raw = "pg_dump: error: unsupported startup parameter in transaction pooling mode";
+  assert.equal(scrubConnectionString(raw, url), raw);
 });

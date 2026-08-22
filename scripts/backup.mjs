@@ -57,8 +57,39 @@ function fail(message) {
   throw new Error(message);
 }
 
+/**
+ * Removes the connection string, and anything that looks like one, from text that is
+ * about to be printed. Log output in this repository is world-readable.
+ *
+ * This replaced a blanket redaction that printed nothing at all on failure. That was
+ * safe and useless: the first real run failed with "supabase exited 1" and no reason,
+ * which is the wrong trade for a job nobody watches.
+ */
+export function scrubConnectionString(text, databaseUrl) {
+  let scrubbed = text;
+
+  if (databaseUrl) {
+    scrubbed = scrubbed.split(databaseUrl).join("<db-url>");
+    try {
+      const url = new URL(databaseUrl);
+      // The password is the secret. The username carries the Supabase project ref.
+      // The host is neither, and "no such host" is the most useful line in a failure,
+      // so it stays. The length guard stops a short value from mangling normal text:
+      // scrubbing every "d" out of a log helps nobody.
+      for (const secret of [url.password, decodeURIComponent(url.password), url.username]) {
+        if (secret && secret.length >= 4) scrubbed = scrubbed.split(secret).join("<redacted>");
+      }
+    } catch {
+      // An unparseable value is still removed by the literal replacement above.
+    }
+  }
+
+  // Catches a connection string the CLI composed itself, in any spelling.
+  return scrubbed.replace(/postgres(?:ql)?:\/\/\S+/gi, "<db-url>");
+}
+
 function run(command, args, options = {}) {
-  const { redactOutput = false, ...spawnOptions } = options;
+  const { scrub, ...spawnOptions } = options;
   const result = spawnSync(command, args, {
     cwd: repoRoot,
     encoding: "utf8",
@@ -67,7 +98,8 @@ function run(command, args, options = {}) {
   });
   if (result.error) throw result.error;
   if (result.status !== 0) {
-    const output = redactOutput ? "" : `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim();
+    const raw = `${result.stdout ?? ""}\n${result.stderr ?? ""}`.trim();
+    const output = scrub ? scrub(raw) : raw;
     fail(`${command} exited ${result.status}${output ? `:\n${output}` : ""}`);
   }
   return result.stdout ?? "";
@@ -311,8 +343,7 @@ function dumpDatabase(cli, databaseUrl, outputPath, extraArgs) {
   run(
     cli.command,
     [...cli.prefix, "db", "dump", "--db-url", databaseUrl, "--file", outputPath, ...extraArgs],
-    // The connection string carries the database password. Never echo the CLI output.
-    { redactOutput: true },
+    { scrub: (text) => scrubConnectionString(text, databaseUrl) },
   );
 }
 
