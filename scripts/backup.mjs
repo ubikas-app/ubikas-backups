@@ -65,6 +65,69 @@ function fail(message) {
  * safe and useless: the first real run failed with "supabase exited 1" and no reason,
  * which is the wrong trade for a job nobody watches.
  */
+/**
+ * Checks the shape of the connection string before anything expensive runs.
+ *
+ * The Supabase CLI answers a bad value with "failed to parse as DSN (invalid dsn)",
+ * which names nothing and arrives two minutes in, after Docker has started. Every
+ * message here says which part is wrong without ever echoing the value: this runs in
+ * a repository whose logs anyone can read.
+ */
+export function assertDatabaseUrl(databaseUrl) {
+  const problem = describeDatabaseUrlProblem(databaseUrl);
+  if (problem) fail(`SUPABASE_DB_URL ${problem}`);
+  return databaseUrl;
+}
+
+export function describeDatabaseUrlProblem(databaseUrl) {
+  if (databaseUrl !== databaseUrl.trim()) {
+    return "has leading or trailing whitespace. Re-set the secret without it.";
+  }
+  if (/\s/.test(databaseUrl)) {
+    return "contains a space or newline. Re-set the secret as a single line.";
+  }
+  if (databaseUrl.startsWith("https://") || databaseUrl.startsWith("http://")) {
+    return (
+      "looks like the project API URL, not a database connection string. " +
+      "Take the Postgres URI from Project Settings, Database, Connection string."
+    );
+  }
+  if (!/^postgres(ql)?:\/\//.test(databaseUrl)) {
+    return 'must start with "postgresql://".';
+  }
+
+  let url;
+  try {
+    url = new URL(databaseUrl);
+  } catch {
+    return (
+      "could not be parsed. If the password contains any of @ : / ? # % or a space, " +
+      "percent-encode it."
+    );
+  }
+
+  if (!url.hostname) return "names no host.";
+  if (!url.username) return "carries no user.";
+  if (!url.password) {
+    return (
+      "carries no password. The value copied from the dashboard holds a " +
+      "[YOUR-PASSWORD] placeholder; replace it with the real password."
+    );
+  }
+  // new URL() percent-encodes the brackets, so the raw value is what to test.
+  if (/\[|%5B|YOUR-PASSWORD/i.test(databaseUrl)) {
+    return "still holds the [YOUR-PASSWORD] placeholder instead of the real password.";
+  }
+  if (url.port === "6543") {
+    return (
+      "uses port 6543, which is transaction pooling mode. pg_dump is not supported " +
+      "there. Use the session pooler on port 5432."
+    );
+  }
+
+  return null;
+}
+
 export function scrubConnectionString(text, databaseUrl) {
   let scrubbed = text;
 
@@ -177,7 +240,7 @@ export function resolveConfig(env, { dryRun, bucket }) {
   }
 
   return {
-    databaseUrl: env.SUPABASE_DB_URL.trim(),
+    databaseUrl: assertDatabaseUrl(env.SUPABASE_DB_URL.trim()),
     recipient,
     bucket: (bucket ?? env.R2_BUCKET ?? "").trim(),
     endpoint: buildEndpoint(env.R2_ACCOUNT_ID.trim()),

@@ -6,6 +6,7 @@ import {
   MINIMUM_TABLE_COUNT,
   REQUIRED_TABLE,
   buildEndpoint,
+  describeDatabaseUrlProblem,
   assertDataDump,
   assertDumpFiles,
   buildManifest,
@@ -308,4 +309,37 @@ test("keeps the line that names the real cause", () => {
   const url = "postgresql://postgres.abc:longpassword@db.example.supabase.co:6543/postgres";
   const raw = "pg_dump: error: unsupported startup parameter in transaction pooling mode";
   assert.equal(scrubConnectionString(raw, url), raw);
+});
+
+test("accepts a well-formed session pooler connection string", () => {
+  assert.equal(
+    describeDatabaseUrlProblem(
+      "postgresql://postgres.abcdef:s3cret@aws-1-sa-east-1.pooler.supabase.com:5432/postgres",
+    ),
+    null,
+  );
+  assert.equal(describeDatabaseUrlProblem("postgres://u:pw@127.0.0.1:54322/postgres"), null);
+});
+
+test("names which part of a bad connection string is wrong", () => {
+  const cases = [
+    [" postgresql://u:p@h:5432/d", /whitespace/],
+    ["postgresql://u:p@h:5432/d\n", /whitespace/],
+    ["https://abcdef.supabase.co", /project API URL/],
+    ["aws-1-sa-east-1.pooler.supabase.com:5432", /must start with/],
+    ["postgresql://postgres.abcdef@host:5432/postgres", /carries no password/],
+    ["postgresql://u:[YOUR-PASSWORD]@h:5432/d", /placeholder/],
+    ["postgresql://u:p@h:6543/d", /transaction pooling mode/],
+  ];
+  for (const [value, expected] of cases) {
+    assert.match(describeDatabaseUrlProblem(value) ?? "", expected, `for ${JSON.stringify(value)}`);
+  }
+});
+
+test("no diagnostic ever repeats the value it rejected", () => {
+  const secret = "postgresql://postgres.abcdef:sup3r-s3cret@h:6543/postgres";
+  const problem = describeDatabaseUrlProblem(secret);
+  assert.ok(problem);
+  assert.ok(!problem.includes("sup3r-s3cret"));
+  assert.ok(!problem.includes("abcdef"));
 });
